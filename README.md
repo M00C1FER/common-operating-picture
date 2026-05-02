@@ -63,8 +63,8 @@ if cop.lock_resource("agent-1", "./src/auth.py"):
     cop.unlock_resource("agent-1", "./src/auth.py")
 
 # Share a finding via blackboard
-cop.blackboard_set("agent-1", "auth_pattern", "JWT with RS256")
-finding = cop.blackboard_get("auth_pattern")
+cop.share("auth_pattern", "JWT with RS256")
+finding = cop.get_shared("auth_pattern")
 
 # Clear task on completion
 cop.clear_task("agent-1")
@@ -86,9 +86,22 @@ common-operating-picture/
 
 ## Cross-Platform Notes
 
-- **Linux/WSL:** `fcntl` exclusive locks
-- **Termux:** `fcntl` supported (Android kernel)
-- **Windows native:** `fcntl` unavailable — use WSL
+- **Linux/WSL:** `fcntl` exclusive locks (LOCK_EX via `flock(2)`)
+- **macOS:** `fcntl.flock` maps to advisory locks — semantics match Linux for local filesystems; not reliable over NFS
+- **Termux:** `fcntl` supported (Android kernel exposes POSIX file-locking)
+- **Alpine Linux:** supported via `apk` — see `install.sh`; musl libc fully supports `fcntl`/`flock`
+- **Windows native:** `fcntl` unavailable — use WSL2 (Ubuntu base works out of the box)
+
+### Stale lock recovery
+
+Application-level locks in `cop_state.json` (`locks` dict) survive process crashes
+because they are stored in the JSON, not in kernel state. The `_clean_stale()` routine
+removes entries older than the configured timeout (default 7200 s / 2 h). Stale locks
+can also be cleared manually with `cop unlock <resource> --cli <owner>`.
+
+The `fcntl.flock` that guards the read-modify-write cycle is process-scoped: the OS
+releases it automatically when the process exits or crashes, so the JSON file itself
+is never permanently wedged.
 
 ## Tools Reference
 

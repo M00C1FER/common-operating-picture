@@ -1,6 +1,7 @@
 import atexit
 import json
 import os
+import sys
 import tempfile
 import time
 import fcntl
@@ -9,6 +10,8 @@ from typing import List, Tuple
 
 COP_HOME = Path(os.environ.get("COP_HOME", os.path.expanduser("~/.common-operating-picture")))
 COP_FILE = Path(os.environ.get("COP_STATE_FILE", str(COP_HOME / "cop_state.json")))
+
+__version__ = "1.0.0"
 
 def _atomic_write_cop(state: dict) -> None:
     """Write COP state atomically via temp file + rename."""
@@ -32,7 +35,9 @@ def _init_cop() -> None:
 def _get_timeouts() -> Tuple[int, int, int]:
     try:
         import yaml
-        config_path = os.path.expanduser("${COP_CONFIG}")
+        config_path = os.environ.get("COP_CONFIG", "")
+        if not config_path:
+            return 7200, 7200, 86400
         with open(config_path) as f:
             gov = yaml.safe_load(f)
         timeouts = gov.get("observability", {}).get("cop", {}).get("timeouts", {})
@@ -280,47 +285,88 @@ class COP:
 
     def __init__(self, state_file: "str | None" = None) -> None:
         self._state_file = Path(state_file) if state_file else COP_FILE
-
-    def _load(self) -> dict:
-        try:
-            return json.loads(self._state_file.read_text())
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {"tasks": {}, "locks": {}, "shared": {}}
-
-    def _save(self, state: dict) -> None:
         self._state_file.parent.mkdir(parents=True, exist_ok=True)
-        tmp_fd, tmp_path = tempfile.mkstemp(dir=self._state_file.parent, suffix=".tmp")
-        try:
-            with os.fdopen(tmp_fd, "w") as fh:
-                json.dump(state, fh, indent=2)
-            os.replace(tmp_path, self._state_file)
-        except Exception:
+        # Ensure file exists so we can open it for read+write locking
+        if not self._state_file.exists():
+            self._state_file.write_text(
+                json.dumps({"tasks": {}, "locks": {}, "shared": {}})
+            )
+
+    def _locked_read_modify_write(self, fn):
+        """Open the state file, acquire an exclusive fcntl lock, run fn(state),
+        write the result atomically, then release the lock.
+
+        This is the single safe entry-point for all mutating operations so that
+        two concurrent processes never interleave their read-modify-write cycles.
+        On Linux and macOS, LOCK_EX via fcntl.flock is process-scoped: if the
+        lock holder exits (crash/SIGKILL), the OS releases the lock automatically,
+        so no manual stale-lock recovery is needed at the fcntl level.
+        Application-level locks stored in the JSON ``locks`` dict ARE cleaned up
+        via ``_clean_stale()`` based on configurable timeouts.
+
+        macOS note: ``fcntl.flock`` on macOS converts to an advisory lock
+        equivalent to Linux. The semantics match for our use-case (exclusive
+        writer, no NFS mounts).
+        """
+        with open(self._state_file, "r+") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
             try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+                fh.seek(0)
+                try:
+                    state = json.loads(fh.read())
+                except (json.JSONDecodeError, ValueError):
+                    state = {"tasks": {}, "locks": {}, "shared": {}}
+                result = fn(state)
+                # Atomic write: temp file + os.replace (same filesystem)
+                tmp_fd, tmp_path = tempfile.mkstemp(
+                    dir=self._state_file.parent, suffix=".tmp"
+                )
+                try:
+                    with os.fdopen(tmp_fd, "w") as out:
+                        json.dump(state, out, indent=2)
+                    os.replace(tmp_path, self._state_file)
+                except Exception:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                    raise
+                return result
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+
+    def _locked_read(self):
+        """Shared-lock read of state (safe for concurrent readers)."""
+        with open(self._state_file, "r") as fh:
+            fcntl.flock(fh, fcntl.LOCK_SH)
+            try:
+                try:
+                    return json.loads(fh.read())
+                except (json.JSONDecodeError, ValueError):
+                    return {"tasks": {}, "locks": {}, "shared": {}}
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
 
     def register_task(self, cli_name: str, task_description: str) -> str:
         """Register an active task for a CLI."""
-        state = self._load()
-        state.setdefault("tasks", {})[cli_name] = {
-            "description": task_description,
-            "timestamp": time.time(),
-        }
-        self._save(state)
+        def _mutate(state):
+            state.setdefault("tasks", {})[cli_name] = {
+                "description": task_description,
+                "timestamp": time.time(),
+            }
+        self._locked_read_modify_write(_mutate)
         return f"Task registered for {cli_name}"
 
     def clear_task(self, cli_name: str) -> str:
         """Clear the active task for a CLI."""
-        state = self._load()
-        state.get("tasks", {}).pop(cli_name, None)
-        self._save(state)
+        def _mutate(state):
+            state.get("tasks", {}).pop(cli_name, None)
+        self._locked_read_modify_write(_mutate)
         return f"Task cleared for {cli_name}"
 
     def status(self) -> str:
         """Return a human-readable summary of active tasks."""
-        state = self._load()
+        state = self._locked_read()
         tasks = state.get("tasks", {})
         if not tasks:
             return "No active tasks."
@@ -334,31 +380,121 @@ class COP:
 
     def share(self, key: str, value: object) -> None:
         """Store a value in the shared blackboard."""
-        state = self._load()
-        state.setdefault("shared", {})[key] = value
-        self._save(state)
+        def _mutate(state):
+            state.setdefault("shared", {})[key] = value
+        self._locked_read_modify_write(_mutate)
 
     def get_shared(self, key: str) -> object:
         """Retrieve a value from the shared blackboard (None if missing)."""
-        return self._load().get("shared", {}).get(key)
+        return self._locked_read().get("shared", {}).get(key)
 
     def lock_resource(self, cli_name: str, resource_path: str) -> bool:
-        """Acquire an exclusive lock on a resource. Returns True if acquired."""
-        state = self._load()
-        locks = state.setdefault("locks", {})
-        current = locks.get(resource_path)
-        if current and (isinstance(current, dict) and current.get("cli") != cli_name):
-            return False
-        locks[resource_path] = {"cli": cli_name, "timestamp": time.time()}
-        self._save(state)
-        return True
+        """Acquire an exclusive application-level lock on a resource.
+
+        Returns True if the lock was acquired; False if another CLI holds it.
+        Uses fcntl.flock for the read-modify-write so two processes cannot
+        race when evaluating the same resource_path simultaneously.
+        """
+        acquired = [False]
+
+        def _mutate(state):
+            _clean_stale(state)
+            locks = state.setdefault("locks", {})
+            current = locks.get(resource_path)
+            if current and isinstance(current, dict) and current.get("cli") != cli_name:
+                acquired[0] = False
+                return
+            locks[resource_path] = {"cli": cli_name, "timestamp": time.time()}
+            acquired[0] = True
+
+        self._locked_read_modify_write(_mutate)
+        return acquired[0]
 
     def unlock_resource(self, cli_name: str, resource_path: str) -> str:
-        """Release a resource lock."""
-        state = self._load()
-        locks = state.get("locks", {})
-        entry = locks.get(resource_path)
-        if isinstance(entry, dict) and entry.get("cli") == cli_name:
-            del locks[resource_path]
-            self._save(state)
+        """Release a resource lock held by cli_name."""
+        def _mutate(state):
+            locks = state.get("locks", {})
+            entry = locks.get(resource_path)
+            if isinstance(entry, dict) and entry.get("cli") == cli_name:
+                del locks[resource_path]
+        self._locked_read_modify_write(_mutate)
         return f"Unlocked: {resource_path}"
+
+
+# ── CLI entry point ──────────────────────────────────────────────────────────
+
+def main() -> None:
+    """CLI entry point: ``cop <subcommand> [args]``."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="cop",
+        description="Common Operating Picture — shared state bus for multi-agent ops",
+    )
+    parser.add_argument("--version", action="version", version=f"cop {__version__}")
+
+    sub = parser.add_subparsers(dest="cmd", metavar="<command>")
+
+    # status
+    sub.add_parser("status", help="Show active tasks and locks")
+
+    # register
+    p_reg = sub.add_parser("register", help="Register a task")
+    p_reg.add_argument("--cli", required=True, help="CLI/agent name")
+    p_reg.add_argument("--task", required=True, help="Task description")
+
+    # clear
+    p_clr = sub.add_parser("clear", help="Clear a task")
+    p_clr.add_argument("--cli", required=True, help="CLI/agent name")
+
+    # lock
+    p_lock = sub.add_parser("lock", help="Lock a resource")
+    p_lock.add_argument("resource", help="Resource path or name")
+    p_lock.add_argument("--cli", required=True, help="CLI/agent name")
+
+    # unlock
+    p_unlock = sub.add_parser("unlock", help="Unlock a resource")
+    p_unlock.add_argument("resource", help="Resource path or name")
+    p_unlock.add_argument("--cli", required=True, help="CLI/agent name")
+
+    # blackboard get/set
+    p_bb_set = sub.add_parser("bb-set", help="Set a blackboard key")
+    p_bb_set.add_argument("key", help="Key name")
+    p_bb_set.add_argument("value", help="JSON-encoded value")
+    p_bb_set.add_argument("--cli", default="cli", help="CLI/agent name (for state file selection)")
+
+    p_bb_get = sub.add_parser("bb-get", help="Get a blackboard key")
+    p_bb_get.add_argument("key", help="Key name")
+
+    args = parser.parse_args()
+
+    cop = COP()
+
+    if args.cmd == "status":
+        print(cop.status())
+    elif args.cmd == "register":
+        print(cop.register_task(args.cli, args.task))
+    elif args.cmd == "clear":
+        print(cop.clear_task(args.cli))
+    elif args.cmd == "lock":
+        ok = cop.lock_resource(args.cli, args.resource)
+        if ok:
+            print(f"LOCKED: {args.resource} by {args.cli.upper()}")
+        else:
+            print(f"DENIED: {args.resource} is locked by another agent")
+            sys.exit(1)
+    elif args.cmd == "unlock":
+        print(cop.unlock_resource(args.cli, args.resource))
+    elif args.cmd == "bb-set":
+        try:
+            value = json.loads(args.value)
+        except json.JSONDecodeError:
+            value = args.value
+        cop.share(args.key, value)
+        print(f"SET: {args.key}")
+    elif args.cmd == "bb-get":
+        result = cop.get_shared(args.key)
+        print(json.dumps(result, indent=2) if result is not None else "null")
+    else:
+        parser.print_help()
+        sys.exit(1)

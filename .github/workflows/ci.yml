@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "copilot/**"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package + dev deps
+        run: pip install -e ".[dev]"
+
+      - name: Run tests
+        run: pytest --tb=short -q
+
+      - name: Smoke-test CLI
+        run: |
+          cop --version
+          cop status
+          cop register --cli ci-agent --task "CI smoke test"
+          cop status
+          cop lock ./dummy_resource --cli ci-agent
+          cop unlock ./dummy_resource --cli ci-agent
+          cop clear --cli ci-agent
