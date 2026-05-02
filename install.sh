@@ -32,6 +32,8 @@ install_deps_system() {
                 sudo dnf install -y python3 python3-virtualenv git
             elif command -v pacman &>/dev/null; then
                 sudo pacman -Sy --noconfirm python git
+            elif command -v apk &>/dev/null; then
+                sudo apk add --no-cache python3 py3-pip git
             fi
             ;;
     esac
