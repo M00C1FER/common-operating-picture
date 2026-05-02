@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Secrets / credentials
+.env
+.env.*
+*.env
+credentials.json
+secrets.yaml
+
+# Data
+*.db
+*.sqlite
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
