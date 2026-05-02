@@ -102,6 +102,9 @@ def test_concurrent_lock_only_one_wins():
         p1.join(timeout=10)
         p2.join(timeout=10)
 
+        assert p1.exitcode == 0, f"p1 did not exit cleanly: {p1.exitcode}"
+        assert p2.exitcode == 0, f"p2 did not exit cleanly: {p2.exitcode}"
+
         results = {}
         while not q.empty():
             agent, ok = q.get()
@@ -116,16 +119,17 @@ def test_concurrent_lock_only_one_wins():
 def test_stale_lock_cleaned_by_timeout():
     """A lock older than the stale threshold is removed by _clean_stale."""
     from common_operating_picture import COP
-    from common_operating_picture.cop import _clean_stale
+    from common_operating_picture.cop import _get_timeouts
+    _task_t, lock_t, _bounty_t = _get_timeouts()
     with tempfile.TemporaryDirectory() as d:
         sf = str(Path(d) / "state.json")
         cop = COP(state_file=sf)
         cop.lock_resource("crashed-agent", "stale.db")
 
-        # Manually backdate the lock entry
+        # Manually backdate the lock entry past the stale threshold
         state_path = Path(sf)
         state = json.loads(state_path.read_text())
-        state["locks"]["stale.db"]["timestamp"] = time.time() - 8000  # > 7200 s
+        state["locks"]["stale.db"]["timestamp"] = time.time() - (lock_t + 60)
         state_path.write_text(json.dumps(state))
 
         # Now another agent should be able to acquire it (stale cleaned on lock)
@@ -135,13 +139,14 @@ def test_stale_lock_cleaned_by_timeout():
 
 
 def test_cli_version():
-    """cop --version returns the version string."""
+    """cop --version returns a version string matching semver."""
+    from common_operating_picture import __version__
     result = subprocess.run(
         [sys.executable, "-m", "common_operating_picture", "--version"],
         capture_output=True, text=True
     )
     assert result.returncode == 0
-    assert "1.0.0" in result.stdout
+    assert __version__ in result.stdout
 
 
 def test_cli_status_empty(tmp_path):

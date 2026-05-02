@@ -461,7 +461,7 @@ def main() -> None:
     p_bb_set = sub.add_parser("bb-set", help="Set a blackboard key")
     p_bb_set.add_argument("key", help="Key name")
     p_bb_set.add_argument("value", help="JSON-encoded value")
-    p_bb_set.add_argument("--cli", default="cli", help="CLI/agent name (for state file selection)")
+    p_bb_set.add_argument("--cli", default="cli", help="CLI/agent name")
 
     p_bb_get = sub.add_parser("bb-get", help="Get a blackboard key")
     p_bb_get.add_argument("key", help="Key name")
