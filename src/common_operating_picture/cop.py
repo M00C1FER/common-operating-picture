@@ -8,10 +8,13 @@ import fcntl
 from pathlib import Path
 from typing import List, Tuple
 
+try:
+    from common_operating_picture import __version__
+except ImportError:
+    __version__ = "1.0.0"
+
 COP_HOME = Path(os.environ.get("COP_HOME", os.path.expanduser("~/.common-operating-picture")))
 COP_FILE = Path(os.environ.get("COP_STATE_FILE", str(COP_HOME / "cop_state.json")))
-
-__version__ = "1.0.0"
 
 def _atomic_write_cop(state: dict) -> None:
     """Write COP state atomically via temp file + rename."""
@@ -336,7 +339,15 @@ class COP:
                 fcntl.flock(fh, fcntl.LOCK_UN)
 
     def _locked_read(self):
-        """Shared-lock read of state (safe for concurrent readers)."""
+        """Shared-lock read of state, safe for concurrent *processes*.
+
+        Multiple processes may hold LOCK_SH simultaneously; a writer holding
+        LOCK_EX will block until all readers have released.  This method is
+        **not** thread-safe within a single process — Python's GIL does not
+        replace OS-level file locking, and ``fcntl.flock`` is per-process on
+        Linux/macOS, so two threads in the same process share the same lock
+        state.  For multi-threaded use, wrap calls with a ``threading.Lock``.
+        """
         with open(self._state_file, "r") as fh:
             fcntl.flock(fh, fcntl.LOCK_SH)
             try:

@@ -121,6 +121,7 @@ def test_stale_lock_cleaned_by_timeout():
     from common_operating_picture import COP
     from common_operating_picture.cop import _get_timeouts
     _task_t, lock_t, _bounty_t = _get_timeouts()
+    _STALE_MARGIN_SECS = 60  # safety margin beyond the stale window
     with tempfile.TemporaryDirectory() as d:
         sf = str(Path(d) / "state.json")
         cop = COP(state_file=sf)
@@ -129,7 +130,7 @@ def test_stale_lock_cleaned_by_timeout():
         # Manually backdate the lock entry past the stale threshold
         state_path = Path(sf)
         state = json.loads(state_path.read_text())
-        state["locks"]["stale.db"]["timestamp"] = time.time() - (lock_t + 60)
+        state["locks"]["stale.db"]["timestamp"] = time.time() - (lock_t + _STALE_MARGIN_SECS)
         state_path.write_text(json.dumps(state))
 
         # Now another agent should be able to acquire it (stale cleaned on lock)
