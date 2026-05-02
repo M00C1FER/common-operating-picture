@@ -7,7 +7,8 @@ import fcntl
 from pathlib import Path
 from typing import List, Tuple
 
-COP_FILE = Path(os.environ.get("COP_STATE_FILE", str(Path(COP_HOME) / "cop_state.json")))
+COP_HOME = Path(os.environ.get("COP_HOME", os.path.expanduser("~/.common-operating-picture")))
+COP_FILE = Path(os.environ.get("COP_STATE_FILE", str(COP_HOME / "cop_state.json")))
 
 def _atomic_write_cop(state: dict) -> None:
     """Write COP state atomically via temp file + rename."""
@@ -255,3 +256,109 @@ def _cop_exit_cleanup() -> None:
             unlock_resource(_exit_cli_name, res)
         except Exception:
             pass
+
+
+# ── COP class (instance-based API) ──────────────────────────────────────────
+
+class COP:
+    """Instance-based wrapper around the Common Operating Picture state file.
+
+    Provides task registration, resource locking, and shared blackboard via
+    a per-instance state file (suitable for testing and sandboxed environments).
+
+    Args:
+        state_file: Path to the JSON state file. Defaults to the global COP_FILE.
+
+    Example::
+
+        cop = COP(state_file="/tmp/my_cop.json")
+        cop.register_task("agent-x", "scanning network")
+        cop.share("findings", {"open_ports": [22, 443]})
+        print(cop.get_shared("findings"))
+        cop.clear_task("agent-x")
+    """
+
+    def __init__(self, state_file: "str | None" = None) -> None:
+        self._state_file = Path(state_file) if state_file else COP_FILE
+
+    def _load(self) -> dict:
+        try:
+            return json.loads(self._state_file.read_text())
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {"tasks": {}, "locks": {}, "shared": {}}
+
+    def _save(self, state: dict) -> None:
+        self._state_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=self._state_file.parent, suffix=".tmp")
+        try:
+            with os.fdopen(tmp_fd, "w") as fh:
+                json.dump(state, fh, indent=2)
+            os.replace(tmp_path, self._state_file)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    def register_task(self, cli_name: str, task_description: str) -> str:
+        """Register an active task for a CLI."""
+        state = self._load()
+        state.setdefault("tasks", {})[cli_name] = {
+            "description": task_description,
+            "timestamp": time.time(),
+        }
+        self._save(state)
+        return f"Task registered for {cli_name}"
+
+    def clear_task(self, cli_name: str) -> str:
+        """Clear the active task for a CLI."""
+        state = self._load()
+        state.get("tasks", {}).pop(cli_name, None)
+        self._save(state)
+        return f"Task cleared for {cli_name}"
+
+    def status(self) -> str:
+        """Return a human-readable summary of active tasks."""
+        state = self._load()
+        tasks = state.get("tasks", {})
+        if not tasks:
+            return "No active tasks."
+        lines = []
+        for cli, data in tasks.items():
+            if isinstance(data, dict):
+                lines.append(f"{cli}: {data.get('description', '')}")
+            else:
+                lines.append(f"{cli}: {data}")
+        return "\n".join(lines)
+
+    def share(self, key: str, value: object) -> None:
+        """Store a value in the shared blackboard."""
+        state = self._load()
+        state.setdefault("shared", {})[key] = value
+        self._save(state)
+
+    def get_shared(self, key: str) -> object:
+        """Retrieve a value from the shared blackboard (None if missing)."""
+        return self._load().get("shared", {}).get(key)
+
+    def lock_resource(self, cli_name: str, resource_path: str) -> bool:
+        """Acquire an exclusive lock on a resource. Returns True if acquired."""
+        state = self._load()
+        locks = state.setdefault("locks", {})
+        current = locks.get(resource_path)
+        if current and (isinstance(current, dict) and current.get("cli") != cli_name):
+            return False
+        locks[resource_path] = {"cli": cli_name, "timestamp": time.time()}
+        self._save(state)
+        return True
+
+    def unlock_resource(self, cli_name: str, resource_path: str) -> str:
+        """Release a resource lock."""
+        state = self._load()
+        locks = state.get("locks", {})
+        entry = locks.get(resource_path)
+        if isinstance(entry, dict) and entry.get("cli") == cli_name:
+            del locks[resource_path]
+            self._save(state)
+        return f"Unlocked: {resource_path}"
