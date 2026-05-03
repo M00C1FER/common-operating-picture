@@ -15,6 +15,7 @@ When multiple AI CLIs run concurrently (Claude Code, Gemini CLI, Copilot CLI), t
 - Task registration and conflict detection across agents/CLIs
 - Resource locking with automatic atexit cleanup
 - A2A blackboard for sharing intermediate findings between agents
+- Task attestation — cryptographic proof that a declared CLI produced a given lock entry
 - Zero external dependencies — pure Python stdlib
 
 ## Quick Start
@@ -70,12 +71,69 @@ finding = cop.get_shared("auth_pattern")
 cop.clear_task("agent-1")
 ```
 
+## Task Attestation
+
+COP lock entries optionally carry an `attested_by` field — an HMAC-SHA256 signature produced by `task_attestation.TaskAttestation`. When present, any agent can verify that the declared CLI actually acquired the lock (not a spoofed or replayed entry).
+
+### Lock schema (`cop_state.json › locks`)
+
+```json
+{
+  "locks": {
+    "./src/auth.py": {
+      "owner": "agent-1",
+      "acquired_at": "2026-04-30T10:22:00Z",
+      "attested_by": {
+        "task_id": "cop-lock-./src/auth.py",
+        "signer_id": "agent-1",
+        "payload_hash": "e3b0c44298fc1c14...",
+        "signature": "aabbccdd11223344...",
+        "ts": "2026-04-30T10:22:00Z"
+      }
+    }
+  }
+}
+```
+
+**`attested_by` sub-fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `task_id` | `str` | `"cop-lock-<resource>"` — stable across retries |
+| `signer_id` | `str` | CLI/agent that requested the lock |
+| `payload_hash` | `str` | SHA-256 of `{"owner": ..., "acquired_at": ...}` canonical JSON |
+| `signature` | `str` | HMAC-SHA256(task_id + signer_id + payload_hash, shared_secret) |
+| `ts` | `str` | ISO-8601 UTC timestamp |
+
+### Using attestation
+
+```python
+from common_operating_picture import COP
+from common_operating_picture.task_attestation import TaskAttestation
+
+ta = TaskAttestation(signer_id="claude", secret="shared-hmac-secret")
+cop = COP(attestation=ta)
+
+# lock_resource() now embeds attested_by in the lock entry
+cop.lock_resource("claude", "./src/parser.py")
+
+# Any agent can verify before trusting a lock entry
+lock_entry = cop.get_lock("./src/parser.py")
+assert ta.verify_lock(lock_entry), "Lock attestation invalid — possible replay or spoofing"
+```
+
+Verification fails if:
+- The `signature` was produced with a different secret (wrong agent impersonation)
+- The `acquired_at` or `owner` fields were modified after signing (`payload_hash` mismatch)
+- The entry has no `attested_by` field and `strict_attestation=True` was passed to `COP()`
+
 ## Architecture (MOSA)
 
 ```
 common-operating-picture/
 ├── src/common_operating_picture/
-│   ├── cop.py             # COP state manager + blackboard
+│   ├── cop.py               # COP state manager + blackboard
+│   ├── task_attestation.py  # HMAC-SHA256 lock-entry signing + verification
 │   └── __init__.py
 ├── install.sh             # Cross-platform wizard
 ├── examples/demo.py       # Two-agent coordination demo
