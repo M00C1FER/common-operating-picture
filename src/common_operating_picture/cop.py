@@ -297,7 +297,7 @@ class COP:
 
     def _locked_read_modify_write(self, fn):
         """Open the state file, acquire an exclusive fcntl lock, run fn(state),
-        write the result atomically, then release the lock.
+        write back in-place, then release the lock.
 
         This is the single safe entry-point for all mutating operations so that
         two concurrent processes never interleave their read-modify-write cycles.
@@ -306,6 +306,13 @@ class COP:
         so no manual stale-lock recovery is needed at the fcntl level.
         Application-level locks stored in the JSON ``locks`` dict ARE cleaned up
         via ``_clean_stale()`` based on configurable timeouts.
+
+        Write strategy: we seek+truncate on the *same* file descriptor that holds
+        the flock rather than using a temp-file + os.replace.  os.replace creates
+        a new inode; any process that opens the path after the replace sees no
+        flock on the new inode, defeating the mutual-exclusion guarantee.  The
+        in-place write keeps the lock and the writable fd bound to the same inode
+        for the full duration of the critical section.
 
         macOS note: ``fcntl.flock`` on macOS converts to an advisory lock
         equivalent to Linux. The semantics match for our use-case (exclusive
@@ -320,20 +327,11 @@ class COP:
                 except (json.JSONDecodeError, ValueError):
                     state = {"tasks": {}, "locks": {}, "shared": {}}
                 result = fn(state)
-                # Atomic write: temp file + os.replace (same filesystem)
-                tmp_fd, tmp_path = tempfile.mkstemp(
-                    dir=self._state_file.parent, suffix=".tmp"
-                )
-                try:
-                    with os.fdopen(tmp_fd, "w") as out:
-                        json.dump(state, out, indent=2)
-                    os.replace(tmp_path, self._state_file)
-                except Exception:
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
-                    raise
+                # Write back in-place on the locked fd — keeps lock + inode bound.
+                encoded = json.dumps(state, indent=2)
+                fh.seek(0)
+                fh.write(encoded)
+                fh.truncate()
                 return result
             finally:
                 fcntl.flock(fh, fcntl.LOCK_UN)
