@@ -4,7 +4,21 @@ import os
 import sys
 import tempfile
 import time
-import fcntl
+try:
+    import fcntl
+except ImportError:  # pragma: no cover — Windows / platforms without fcntl
+    class _FcntlStub:
+        """No-op stub so the module loads on platforms that lack fcntl (e.g. Windows)."""
+
+        LOCK_EX: int = 2
+        LOCK_SH: int = 1
+        LOCK_UN: int = 8
+
+        @staticmethod
+        def flock(fd: object, op: int) -> None:  # noqa: ARG004
+            """No-op advisory lock placeholder."""
+
+    fcntl = _FcntlStub()  # type: ignore[assignment]
 from pathlib import Path
 from typing import List, Tuple
 
