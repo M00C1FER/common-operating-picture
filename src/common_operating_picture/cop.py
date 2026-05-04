@@ -85,7 +85,10 @@ def register_task(cli_name: str, task_description: str) -> str:
     with open(COP_FILE, "r+") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         try:
-            state = json.loads(f.read())
+            try:
+                state = json.loads(f.read())
+            except (json.JSONDecodeError, ValueError):
+                state = {"tasks": {}, "locks": {}, "bounties": {}}
             _clean_stale(state)
             state.setdefault("tasks", {})[cli_name] = {
                 "description": task_description,
@@ -102,7 +105,10 @@ def clear_task(cli_name: str) -> str:
     with open(COP_FILE, "r+") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         try:
-            state = json.loads(f.read())
+            try:
+                state = json.loads(f.read())
+            except (json.JSONDecodeError, ValueError):
+                state = {"tasks": {}, "locks": {}, "bounties": {}}
             if cli_name in state.get("tasks", {}):
                 del state["tasks"][cli_name]
             _atomic_write_cop(state)
@@ -115,8 +121,13 @@ def check_cop() -> str:
     _init_cop()
     with open(COP_FILE, "r") as f:
         fcntl.flock(f, fcntl.LOCK_SH)
-        state = json.loads(f.read())
-        fcntl.flock(f, fcntl.LOCK_UN)
+        try:
+            try:
+                state = json.loads(f.read())
+            except (json.JSONDecodeError, ValueError):
+                state = {"tasks": {}, "locks": {}, "bounties": {}}
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
     output = ["--- COMMON OPERATING PICTURE (COP) ---"]
     if not state.get("tasks"):
@@ -140,7 +151,10 @@ def lock_resource(cli_name: str, resource_path: str) -> str:
     with open(COP_FILE, "r+") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         try:
-            state = json.loads(f.read())
+            try:
+                state = json.loads(f.read())
+            except (json.JSONDecodeError, ValueError):
+                state = {"tasks": {}, "locks": {}, "bounties": {}}
             _clean_stale(state)
             state.setdefault("locks", {})
 
@@ -163,7 +177,10 @@ def unlock_resource(cli_name: str, resource_path: str) -> str:
     with open(COP_FILE, "r+") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         try:
-            state = json.loads(f.read())
+            try:
+                state = json.loads(f.read())
+            except (json.JSONDecodeError, ValueError):
+                state = {"tasks": {}, "locks": {}, "bounties": {}}
             if resource_path in state.get("locks", {}) and state["locks"][resource_path]["cli"] == cli_name:
                 del state["locks"][resource_path]
             _atomic_write_cop(state)
@@ -178,7 +195,10 @@ def post_bounty(requester: str, required_skill: str, task: str, reward: float = 
     with open(COP_FILE, "r+") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         try:
-            state = json.loads(f.read())
+            try:
+                state = json.loads(f.read())
+            except (json.JSONDecodeError, ValueError):
+                state = {"tasks": {}, "locks": {}, "bounties": {}}
             _clean_stale(state)
             state.setdefault("bounties", {})[bounty_id] = {
                 "requester": requester,
@@ -200,7 +220,10 @@ def bid_bounty(bounty_id: str, agent_name: str, est_cost: float) -> str:
     with open(COP_FILE, "r+") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         try:
-            state = json.loads(f.read())
+            try:
+                state = json.loads(f.read())
+            except (json.JSONDecodeError, ValueError):
+                state = {"tasks": {}, "locks": {}, "bounties": {}}
             if bounty_id not in state.get("bounties", {}):
                 return f"ERROR: Bounty '{bounty_id}' not found."
 
@@ -223,7 +246,10 @@ def claim_bounty(bounty_id: str, agent_name: str) -> str:
     with open(COP_FILE, "r+") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         try:
-            state = json.loads(f.read())
+            try:
+                state = json.loads(f.read())
+            except (json.JSONDecodeError, ValueError):
+                state = {"tasks": {}, "locks": {}, "bounties": {}}
 
             if bounty_id not in state.get("bounties", {}):
                 return f"DENIED: Bounty {bounty_id} does not exist."
@@ -517,7 +543,6 @@ def main() -> None:
         print(f"SET: {args.key}")
     elif args.cmd == "bb-get":
         result = cop.get_shared(args.key)
-        print(json.dumps(result, indent=2) if result is not None else "null")
-    else:
-        parser.print_help()
-        sys.exit(1)
+     
+
+<note>Content truncated. Call the fetch tool with a start_index of 20000 to get more content.</note>
