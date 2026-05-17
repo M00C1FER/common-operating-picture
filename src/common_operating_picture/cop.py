@@ -543,6 +543,12 @@ def main() -> None:
         print(f"SET: {args.key}")
     elif args.cmd == "bb-get":
         result = cop.get_shared(args.key)
-     
-
-<note>Content truncated. Call the fetch tool with a start_index of 20000 to get more content.</note>
+        if isinstance(result, (dict, list)):
+            print(json.dumps(result, indent=2))
+        elif result is None:
+            print("null")
+        else:
+            print(result)
+    else:
+        parser.print_help()
+        sys.exit(1)

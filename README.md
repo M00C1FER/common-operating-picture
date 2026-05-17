@@ -145,7 +145,13 @@ common-operating-picture/
 └── TOOLS.md
 ```
 
-**Go refactor candidate:** COP's locking primitives map directly to Go's `sync.Mutex` + `os.File` locking, with better cross-platform support than Python's `fcntl` (which doesn't work on Windows native).
+## Go Port
+
+A Go port is in progress in `go/` to replace `fcntl`-based locking with
+`sync.RWMutex`, enabling cross-platform (including Windows native) operation.
+
+The Python implementation in `src/common_operating_picture/` remains stable and
+is not being removed. Track progress: `go/cmd/cop-daemon/main.go`
 
 ## Cross-Platform Notes
 
