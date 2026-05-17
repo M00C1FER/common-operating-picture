@@ -3,6 +3,8 @@
 > This repo is a learning / demonstration project, not an actively-maintained product. The code works for what it shows — but it isn't intended for production adoption and won't receive ongoing development. The active development focus is [`M00C1FER/mcp-citation-research`](https://github.com/M00C1FER/mcp-citation-research) (MCP research server with a hard confidence-gate refusal contract).
 # Common Operating Picture (COP)
 
+> Part of the [Agent Governance Stack](./GOVERNANCE-STACK.md) — dispatch · coordination · verification
+
 > Lightweight shared-state bus for multi-CLI/multi-agent coordination — prevent task collisions with atomic file locking and A2A blackboards.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
